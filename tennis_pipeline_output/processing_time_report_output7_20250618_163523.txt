@@ -1,0 +1,30 @@
+============================================================
+テニスビデオ分析パイプライン 処理時間レポート
+============================================================
+
+ビデオファイル: C:\Users\akama\AppData\Local\Programs\Python\Python310\python_file\projects\tennis_ball_tracking\data\raw\output7.mp4
+実行日時: 2025年06月18日 16:35:23
+フレームスキップ: 10
+画像サイズ: 1920
+YOLOモデル: C:\Users\akama\AppData\Local\Programs\Python\Python310\python_file\projects\tennis_ball_tracking\models\yolo_model\best_5_31.pt
+LSTMモデル: C:\Users\akama\AppData\Local\Programs\Python\Python310\python_file\projects\tennis_ball_tracking\models\lstm_model
+HMMモデル: C:\Users\akama\AppData\Local\Programs\Python\Python310\python_file\projects\tennis_ball_tracking\models\hmm_model\hmm_model_supervised.joblib
+オーバーレイモード: ffmpeg
+Rally抽出モード: 有効
+Rally前バッファ: 3.0 秒
+Rally後バッファ: 2.0 秒
+
+------------------------------------------------------------
+各ステップの処理時間
+------------------------------------------------------------
+
+ステップ 1 (コートキャリブレーション)         :    14.52 秒
+ステップ 2 (ボールトラッキング)            :   124.27 秒
+ステップ 3 (特徴量抽出)                :    95.07 秒
+ステップ 4 (LSTM予測)               :    44.70 秒
+ステップ 4.5 (HMM後処理)             :    37.57 秒
+ステップ 6 (Rally区間の抽出)           :    10.59 秒
+
+------------------------------------------------------------
+総処理時間                         :   326.73 秒
+============================================================

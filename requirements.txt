@@ -1,0 +1,9 @@
+numpy
+pandas
+opencv-python
+torch
+ultralytics
+scikit-learn
+tqdm
+hmmlearn
+# matplotlib # 必要に応じてコメントアウトを解除してください

@@ -1,0 +1,4 @@
+graft tennis_ball_tracking/models
+graft tennis_ball_tracking/training_data
+include tennis_ball_tracking/PIPELINE_ARCHITECTURE.md
+include tennis_ball_tracking/setup_instructions.md
