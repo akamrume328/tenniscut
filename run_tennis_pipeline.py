@@ -551,6 +551,9 @@ if __name__ == "__main__":
     if models_weights_dir.exists() and models_weights_dir.is_dir():
         print(f"\n利用可能なYOLOモデルファイル ({models_weights_dir}):")
         for i, file_path in enumerate(models_weights_dir.iterdir()):
+            if file_path.is_file() and file_path.suffix.lower() == ".engine":
+                pt_files.append(file_path)
+                print(f"  {len(pt_files)}. {file_path.name}")
             if file_path.is_file() and file_path.suffix.lower() == ".pt":
                 pt_files.append(file_path)
                 print(f"  {len(pt_files)}. {file_path.name}")

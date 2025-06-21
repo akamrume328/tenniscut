@@ -244,7 +244,7 @@ class OptimizedFrameReader:
                 self.frame_queue.put((None, -1))
             except Exception:
                 pass
-                
+
     def start_reading(self):
         """非同期読み込み開始"""
         if self.reading_active:
