@@ -194,4 +194,6 @@ runs/
 
 *.mp4
 
-*/mov
+*.mov
+
+uploads/
