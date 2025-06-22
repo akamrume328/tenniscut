@@ -9,27 +9,64 @@
         .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h1, h2 { text-align: center; }
         .upload-section { border-bottom: 1px solid #ddd; padding-bottom: 20px; margin-bottom: 20px; }
-        .history-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
+        .history-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee; gap: 15px; /* 要素間のスペースを追加 */ }
         .history-item:last-child { border-bottom: none; }
         .file-info { text-align: left; }
         .file-info .filename { font-weight: bold; }
         .file-info .timestamp { font-size: 0.8em; color: #777; }
-        .status { font-weight: bold; padding: 5px 10px; border-radius: 5px; color: white; }
+        .status { font-weight: bold; padding: 5px 10px; border-radius: 5px; color: white; min-width: 150px; text-align: center; }
         .status.pending { background-color: #ffc107; }
         .status.progress { background-color: #17a2b8; }
         .status.success { background-color: #28a745; }
         .status.failure { background-color: #dc3545; }
         .action a { display: inline-block; padding: 5px 10px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; }
+        
+        /* 追加: actionコンテナのスタイル */
+        .action {
+            min-width: 100px;
+            text-align: center;
+        }
+        
+        /* 履歴項目のレイアウトを調整 */
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            gap: 15px; /* 要素間のスペースを追加 */
+        }
+        
+        .status-action-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #progress-wrapper {
+            margin-top: 15px;
+            width: 100%;
+            display: none; /* 最初は非表示 */
+        }
+        #progress-bar {
+            width: 100%;
+            height: 20px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="upload-section">
             <h1>テニス動画分析</h1>
-            <form method="post" action="/upload" enctype="multipart/form-data">
-                <input type="file" name="video" accept="video/*" required>
-                <input type="submit" value="アップロードして分析開始">
-            </form>
+            <div>
+                <input type="file" name="video" id="video-input" accept="video/*" required>
+                <input type="submit" id="upload-button" value="アップロードして分析開始">
+            </div>
+            <div id="progress-wrapper">
+                <p id="progress-text">アップロード中...</p>
+                <progress id="progress-bar" value="0" max="100"></progress>
+            </div>
             {% with messages = get_flashed_messages() %}
               {% if messages %}
                 {% for message in messages %}
@@ -57,9 +94,10 @@
                         {% else %}
                             <span class="status progress" data-task-id="{{ task.task_id }}">処理中...</span>
                         {% endif %}
-                    </div>
-                    <div class="action" id="action-{{ task.task_id }}">
+                        <div class="action" id="action-{{ task.task_id }}">
+                            <!-- ここにダウンロードボタンが挿入される -->
                         </div>
+                    </div>
                 </div>
                 {% else %}
                 <p>まだ分析履歴はありません。</p>
@@ -69,46 +107,165 @@
     </div>
 
     <script>
+        const uploadButton = document.getElementById('upload-button');
+        const videoInput = document.getElementById('video-input');
+        const progressWrapper = document.getElementById('progress-wrapper');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+
+        uploadButton.addEventListener('click', () => {
+            const file = videoInput.files[0];
+            if (!file) {
+                alert('ファイルを選択してください。');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('video', file);
+
+            const xhr = new XMLHttpRequest();
+
+            xhr.upload.addEventListener('progress', (event) => {
+                if (event.lengthComputable) {
+                    const percentComplete = (event.loaded / event.total) * 100;
+                    progressBar.value = percentComplete;
+                    progressText.textContent = `アップロード中: ${Math.round(percentComplete)}%`;
+                }
+            });
+
+            xhr.onload = () => {
+                uploadButton.disabled = false;
+                progressWrapper.style.display = 'none';
+
+                if (xhr.status === 200 || (xhr.status > 300 && xhr.status < 400)) { // リダイレクトも成功とみなす
+                    // サーバーからのリダイレクト先に自動で移動
+                    if (xhr.responseURL) {
+                        window.location.href = xhr.responseURL;
+                    } else {
+                        // 予期せぬ応答
+                        alert('サーバーから予期せぬ応答がありました。ページを再読み込みします。');
+                        window.location.reload();
+                    }
+                } else if (xhr.status === 413) {
+                    alert('アップロードエラー: ファイルサイズが大きすぎます。');
+                } else {
+                    alert(`アップロードに失敗しました。サーバーエラー: ${xhr.status}`);
+                }
+            };
+            
+            xhr.onerror = () => {
+                alert('ネットワークエラーが発生しました。');
+                uploadButton.disabled = false;
+                progressWrapper.style.display = 'none';
+            };
+
+            progressWrapper.style.display = 'block';
+            progressBar.value = 0;
+            progressText.textContent = 'アップロード中: 0%';
+            uploadButton.disabled = true;
+
+            xhr.open('POST', '/upload', true);
+            xhr.send(formData);
+        });
+
+        // ★★★↓ここからが修正・追加箇所↓★★★
+
+        // 秒数を「X分Y秒」の形式に変換する関数
+        function formatTime(seconds) {
+            if (!seconds || seconds <= 0) return '';
+            seconds = Math.round(seconds);
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            if (mins > 0) {
+                return ` (目安: 約${mins}分${secs}秒)`;
+            }
+            return ` (目安: 約${secs}秒)`;
+        }
+
         function checkStatus(taskId) {
             fetch(`/check_status/${taskId}`)
                 .then(response => response.json())
                 .then(data => {
-                    const statusSpan = document.querySelector(`.status[data-task-id="${taskId}"]`);
+                    // data-task-id属性がない場合も含めてstatusSpanを取得
+                    const taskElement = document.getElementById(`task-${taskId}`);
+                    if (!taskElement) return;
+                    
+                    const statusSpan = taskElement.querySelector('.status');
+                    const actionDiv = document.getElementById(`action-${taskId}`);
+                    
                     if (!statusSpan) return;
 
+                    let statusMessage = data.status;
+                    // 目安時間を表示するロジック
+                    if (data.state === 'PROGRESS' && data.meta && data.meta.estimated_time) {
+                        statusMessage = `処理中...${formatTime(data.meta.estimated_time)}`;
+                    }
+                    statusSpan.textContent = statusMessage;
+                    
                     if (data.state === 'SUCCESS') {
                         statusSpan.textContent = '完了';
                         statusSpan.className = 'status success';
+                        statusSpan.removeAttribute('data-task-id');
                         const result = data.result;
-                        if (result.status === 'Success') {
-                            const actionDiv = document.getElementById(`action-${taskId}`);
-                            actionDiv.innerHTML = `<a href="/download/${result.result_file}">ダウンロード</a>`;
+                        
+                        // デバッグ用ログを追加
+                        console.log('Task completed:', taskId);
+                        console.log('Result data:', result);
+                        
+                        if (result && result.status === 'Success') {
+                            // デバッグ情報を詳細に出力
+                            console.log('actionDiv found:', !!actionDiv);
+                            console.log('actionDiv element:', actionDiv);
+                            console.log('result_file:', result.result_file);
+                            
+                            if (actionDiv) {
+                                console.log('Before innerHTML update');
+                                actionDiv.innerHTML = `<a href="/download/${result.result_file}">ダウンロード</a>`;
+                                console.log('After innerHTML update');
+                                console.log('New actionDiv innerHTML:', actionDiv.innerHTML);
+                            } else {
+                                console.error('actionDiv not found for task:', taskId);
+                                console.log('Looking for element with id:', `action-${taskId}`);
+                            }
                         } else {
+                            console.log('Result status is not Success:', result);
                             statusSpan.textContent = 'エラー';
                             statusSpan.className = 'status failure';
                         }
                     } else if (data.state === 'FAILURE') {
                         statusSpan.textContent = 'エラー';
                         statusSpan.className = 'status failure';
+                        statusSpan.removeAttribute('data-task-id');
                     }
-                    // 処理中または待機中の場合は、何もしない（次のポーリングを待つ）
+                })
+                .catch(error => {
+                    console.error('ステータスチェックエラー:', error);
                 });
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            // 全てのタスクをチェック（完了済みも含む）
+            const allTasks = Array.from(document.querySelectorAll('.history-item'));
+            
+            allTasks.forEach(item => {
+                const taskId = item.id.replace('task-', '');
+                if (taskId) {
+                    checkStatus(taskId);
+                }
+            });
+
+            // 処理中のタスクがある場合のみ、定期チェックを開始
             const processingTasks = document.querySelectorAll('.status[data-task-id]');
             if (processingTasks.length > 0) {
-                // 3秒ごとにすべての処理中タスクのステータスを確認
                 setInterval(() => {
-                    processingTasks.forEach(span => {
-                        // 完了済みのタスクはポーリングしない
-                        if(span.dataset.taskId) {
-                           checkStatus(span.dataset.taskId);
-                        }
+                    const stillProcessingTasks = document.querySelectorAll('.status[data-task-id]');
+                    stillProcessingTasks.forEach(span => {
+                       checkStatus(span.dataset.taskId);
                     });
-                }, 3000);
+                }, 5000); // 5秒ごとに更新
             }
         });
+        // ★★★↑ここまでが修正・追加箇所↑★★★
     </script>
 </body>
 </html>

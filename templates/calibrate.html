@@ -288,14 +288,28 @@
         
         resetButton.addEventListener('click', initializeDefaultPoints);
         
-        saveButton.addEventListener('click', () => { /* ...保存処理は変更なし... */
+        saveButton.addEventListener('click', () => {
             const scaleX = originalWidth / canvas.width;
             const scaleY = originalHeight / canvas.height;
             const finalPoints = points.map(p => ({ x: Math.round(p.x * scaleX), y: Math.round(p.y * scaleY) }));
+            
+            // キー名形式で座標データを構築
+            const coordinatesData = {
+                video_name: videoName,
+                coordinates: {
+                    top_left_corner: [finalPoints[0].x, finalPoints[0].y],
+                    top_right_corner: [finalPoints[1].x, finalPoints[1].y],
+                    bottom_left_corner: [finalPoints[2].x, finalPoints[2].y],
+                    bottom_right_corner: [finalPoints[3].x, finalPoints[3].y],
+                    net_left_ground: [finalPoints[4].x, finalPoints[4].y],
+                    net_right_ground: [finalPoints[5].x, finalPoints[5].y]
+                }
+            };
+            
             fetch('/save_coordinates', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ video_name: videoName, points: finalPoints }),
+                body: JSON.stringify(coordinatesData),
             })
             .then(r => r.json()).then(d => {
                 if (d.status === 'success') {

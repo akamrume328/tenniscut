@@ -14,22 +14,19 @@ from tasks import run_analysis_task, celery
 # --- 設定 ---
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'tennis_pipeline_output/06_rally_extract' 
-HISTORY_FILE = 'tasks_history.json' # ★★★ 履歴ファイル名を追加 ★★★
+HISTORY_FILE = 'tasks_history.json'
 ALLOWED_EXTENSIONS = {'mp4', 'mov', 'avi', 'm4v', 'mkv'}
 
 app = Flask(__name__)
-# ... app.configは変更なし ...
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024 
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024 # 上限を4GBに設定
 app.secret_key = 'super secret key'
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# ★★★↓ここから履歴管理用の関数を追加↓★★★
 def get_task_history():
-    """タスク履歴をJSONファイルから読み込む"""
     if not os.path.exists(HISTORY_FILE):
         return []
     with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
@@ -39,9 +36,7 @@ def get_task_history():
             return []
 
 def save_task_to_history(task_id, original_filename):
-    """タスク情報を履歴ファイルに保存する"""
     history = get_task_history()
-    # 新しいタスクをリストの先頭に追加
     history.insert(0, {
         'task_id': task_id,
         'original_filename': original_filename,
@@ -50,10 +45,8 @@ def save_task_to_history(task_id, original_filename):
     with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
         json.dump(history, f, indent=4)
 
-# ★★★↓トップページを履歴表示に変更↓★★★
 @app.route('/')
 def history_page():
-    """タスクの履歴を一覧表示する"""
     tasks_with_status = []
     history = get_task_history()
     for task_info in history:
@@ -62,9 +55,9 @@ def history_page():
         tasks_with_status.append(task_info)
     return render_template('history.html', tasks=tasks_with_status)
 
-# ... allowed_file, convert_to_standard_mp4 は変更なし ...
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 def convert_to_standard_mp4(source_path, output_path):
     print(f"動画を標準的なMP4形式に変換します: {source_path} -> {output_path}")
     try:
@@ -76,7 +69,6 @@ def convert_to_standard_mp4(source_path, output_path):
         flash(f"動画の変換に失敗しました: {e.stderr.decode()}")
         return False
 
-# ★★★↓/upload後のリダイレクト先を履歴ページに変更↓★★★
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'video' not in request.files:
@@ -96,8 +88,6 @@ def upload_file():
         flash('許可されていないファイル形式です')
         return redirect(url_for('history_page'))
 
-
-# ... /calibrate, /save_coordinates は変更なし ...
 @app.route('/calibrate/<path:video_name>')
 def calibrate_page(video_name):
     video_path = Path(app.config['UPLOAD_FOLDER']) / video_name
@@ -114,7 +104,10 @@ def calibrate_page(video_name):
         if not ret:
             flash('動画フレームの読み込みに失敗しました。')
             return redirect(url_for('history_page'))
-        # frame = cv2.rotate(frame, cv2.ROTATE_180)
+        
+        # ★★★↓ここのコメントアウト(#)を削除して、回転処理を有効化↓★★★
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
+        
         _, buffer = cv2.imencode('.jpg', frame)
         frame_b64 = base64.b64encode(buffer).decode('utf-8')
         height, width, _ = frame.shape
@@ -123,59 +116,83 @@ def calibrate_page(video_name):
         print(f"キャリブレーションページの生成中にエラー: {e}")
         flash('ページの生成中にエラーが発生しました。')
         return redirect(url_for('history_page'))
+
 @app.route('/save_coordinates', methods=['POST'])
 def save_coordinates():
     data = request.get_json()
-    video_name = data.get('video_name')
-    points_list = data.get('points')
-    if not video_name or not points_list or len(points_list) != 6:
-        return {"status": "error", "message": "必要なデータが不足しています。"}, 400
-    try:
-        point_names = ["top_left_corner", "top_right_corner", "bottom_left_corner", "bottom_right_corner", "net_left_ground", "net_right_ground"]
-        coordinates_dict = {name: [p['x'], p['y']] for name, p in zip(point_names, points_list)}
-        video_stem = Path(video_name).stem.replace('_converted', '')
-        output_dir = Path('tennis_pipeline_output') / '00_calibration_data'
-        output_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"court_coords_{video_stem}_{timestamp}.json"
-        save_path = output_dir / output_filename
-        with open(save_path, 'w') as f:
-            json.dump(coordinates_dict, f, indent=4)
-        print(f"コート座標を正しい形式で保存しました: {save_path}")
-        return {"status": "success", "redirect_url": url_for('start_analysis', video_name=video_name)}
-    except Exception as e:
-        print(f"座標の保存中にエラー: {e}")
-        return {"status": "error", "message": "サーバー側で保存中にエラーが発生しました。"}, 500
+    video_name = data['video_name']
+    coordinates = data['coordinates']
+    
+    # ファイル名の生成
+    base_name = os.path.splitext(video_name)[0]
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"court_coords_{base_name}_{timestamp}.json"
+    filepath = os.path.join('tennis_pipeline_output', '00_calibration_data', filename)
+    
+    # キー名形式で保存（メタデータ付き）
+    coordinates_data = {
+        "top_left_corner": coordinates['top_left_corner'],
+        "top_right_corner": coordinates['top_right_corner'],
+        "bottom_left_corner": coordinates['bottom_left_corner'],
+        "bottom_right_corner": coordinates['bottom_right_corner'],
+        "net_left_ground": coordinates['net_left_ground'],
+        "net_right_ground": coordinates['net_right_ground'],
+        "_metadata": {
+            "creation_time": datetime.now().isoformat(),
+            "video_name": video_name,
+            "coordinate_count": 6,
+            "point_names": [
+                "top_left_corner",
+                "top_right_corner", 
+                "bottom_left_corner",
+                "bottom_right_corner",
+                "net_left_ground",
+                "net_right_ground"
+            ]
+        }
+    }
+    
+    # ディレクトリ作成
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    
+    # ファイル保存
+    with open(filepath, 'w') as f:
+        json.dump(coordinates_data, f, indent=2)
+    
+    print(f"コート座標を保存しました（キー名形式）: {filepath}")
+    
+    return jsonify({
+        'status': 'success',
+        'redirect_url': url_for('start_analysis', video_name=video_name)
+    })
 
-# ★★★↓/start_analysis に履歴保存処理を追加し、リダイレクト先を履歴ページに変更↓★★★
 @app.route('/start_analysis/<path:video_name>')
 def start_analysis(video_name):
+    """分析タスク（動画変換を含む）をCeleryに依頼する"""
     original_filename = secure_filename(video_name)
-    base_name, _ = os.path.splitext(original_filename)
     original_video_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename)
-    converted_mp4_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{base_name}_converted.mp4")
 
-    if not os.path.exists(converted_mp4_path):
-        if not convert_to_standard_mp4(original_video_path, converted_mp4_path):
-            flash("動画変換に失敗したため、分析を開始できません。")
-            return redirect(url_for('history_page'))
+    if not os.path.exists(original_video_path):
+        flash("分析対象の動画ファイルが見つかりません。")
+        return redirect(url_for('history_page'))
 
-    print(f"Celeryに分析タスクを依頼します: {original_filename}")
-    task = run_analysis_task.delay(converted_mp4_path, original_filename)
+    print(f"Celeryに分析タスク（変換込み）を依頼します: {original_filename}")
     
-    # ★★★ 履歴ファイルに今回のタスクを記録 ★★★
+    # ★★★ タスクに渡す引数を、変換前の元の動画パスに変更 ★★★
+    task = run_analysis_task.delay(original_video_path, original_filename)
+    
     save_task_to_history(task.id, original_filename)
     
-    # ★★★ 履歴ページにリダイレクト ★★★
     return redirect(url_for('history_page'))
 
 
-# ★★★↓/check_status は変更なし、/status と /result は不要になるので削除可能だが残しておく↓★★★
 @app.route('/check_status/<task_id>')
 def check_task_status(task_id):
     task = run_analysis_task.AsyncResult(task_id)
     if task.state == 'PENDING':
         response = {'state': task.state, 'status': '待機中...'}
+    elif task.state == 'PROGRESS': # ★★★ 進行中状態を追加
+        response = {'state': task.state, 'status': '処理中...', 'meta': task.info}
     elif task.state != 'FAILURE':
         response = {'state': task.state, 'status': '処理中...'}
         if task.state == 'SUCCESS':
@@ -183,7 +200,7 @@ def check_task_status(task_id):
     else:
         response = {'state': task.state, 'status': str(task.info)}
     return jsonify(response)
-
+    
 @app.route('/result/<filename>')
 def show_result(filename):
     return render_template('result.html', filename=filename)
