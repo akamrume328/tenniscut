@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>テニス動画分析</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1, h2 { text-align: center; }
+        .upload-section { border-bottom: 1px solid #ddd; padding-bottom: 20px; margin-bottom: 20px; }
+        .history-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee; }
+        .history-item:last-child { border-bottom: none; }
+        .file-info { text-align: left; }
+        .file-info .filename { font-weight: bold; }
+        .file-info .timestamp { font-size: 0.8em; color: #777; }
+        .status { font-weight: bold; padding: 5px 10px; border-radius: 5px; color: white; }
+        .status.pending { background-color: #ffc107; }
+        .status.progress { background-color: #17a2b8; }
+        .status.success { background-color: #28a745; }
+        .status.failure { background-color: #dc3545; }
+        .action a { display: inline-block; padding: 5px 10px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="upload-section">
+            <h1>テニス動画分析</h1>
+            <form method="post" action="/upload" enctype="multipart/form-data">
+                <input type="file" name="video" accept="video/*" required>
+                <input type="submit" value="アップロードして分析開始">
+            </form>
+            {% with messages = get_flashed_messages() %}
+              {% if messages %}
+                {% for message in messages %}
+                  <p style="color:red;">{{ message }}</p>
+                {% endfor %}
+              {% endif %}
+            {% endwith %}
+        </div>
+
+        <div class="history-section">
+            <h2>分析履歴</h2>
+            <div id="history-list">
+                {% for task in tasks %}
+                <div class="history-item" id="task-{{ task.task_id }}">
+                    <div class="file-info">
+                        <span class="filename">{{ task.original_filename }}</span>
+                        <br>
+                        <span class="timestamp">{{ task.timestamp.split('.')[0].replace('T', ' ') }}</span>
+                    </div>
+                    <div class="status-action-container">
+                        {% if task.state == 'SUCCESS' %}
+                            <span class="status success">完了</span>
+                        {% elif task.state == 'FAILURE' %}
+                            <span class="status failure">エラー</span>
+                        {% else %}
+                            <span class="status progress" data-task-id="{{ task.task_id }}">処理中...</span>
+                        {% endif %}
+                    </div>
+                    <div class="action" id="action-{{ task.task_id }}">
+                        </div>
+                </div>
+                {% else %}
+                <p>まだ分析履歴はありません。</p>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function checkStatus(taskId) {
+            fetch(`/check_status/${taskId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const statusSpan = document.querySelector(`.status[data-task-id="${taskId}"]`);
+                    if (!statusSpan) return;
+
+                    if (data.state === 'SUCCESS') {
+                        statusSpan.textContent = '完了';
+                        statusSpan.className = 'status success';
+                        const result = data.result;
+                        if (result.status === 'Success') {
+                            const actionDiv = document.getElementById(`action-${taskId}`);
+                            actionDiv.innerHTML = `<a href="/download/${result.result_file}">ダウンロード</a>`;
+                        } else {
+                            statusSpan.textContent = 'エラー';
+                            statusSpan.className = 'status failure';
+                        }
+                    } else if (data.state === 'FAILURE') {
+                        statusSpan.textContent = 'エラー';
+                        statusSpan.className = 'status failure';
+                    }
+                    // 処理中または待機中の場合は、何もしない（次のポーリングを待つ）
+                });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const processingTasks = document.querySelectorAll('.status[data-task-id]');
+            if (processingTasks.length > 0) {
+                // 3秒ごとにすべての処理中タスクのステータスを確認
+                setInterval(() => {
+                    processingTasks.forEach(span => {
+                        // 完了済みのタスクはポーリングしない
+                        if(span.dataset.taskId) {
+                           checkStatus(span.dataset.taskId);
+                        }
+                    });
+                }, 3000);
+            }
+        });
+    </script>
+</body>
+</html>

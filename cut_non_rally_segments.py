@@ -285,7 +285,7 @@ if __name__ == '__main__':
         sys.exit(1)
 
     # Rally区間抽出のテスト
-    success = cut_non_rally_segments(
+    success = cut_rally_segments(
         video_path_str=str(dummy_video_path),
         csv_path_str=str(dummy_csv_path),
         output_video_path_str=str(dummy_output_video_path),

@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, user-scalable=no">
+    <title>コート座標設定 (ハイブリッド版)</title>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f0f2f5; 
+            margin: 0; padding: 0; text-align: center; 
+            overscroll-behavior: none; display: flex; flex-direction: column; height: 100vh;
+        }
+        .instructions { 
+            margin: 10px auto; padding: 5px 10px; background-color: #fff; border-radius: 8px; 
+            max-width: 600px; box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+        .instructions p { margin: 5px 0; font-size: 0.9em; }
+        .calibration-wrapper { 
+            position: relative; width: 100%; flex-grow: 1; margin: 10px auto;
+            background-color: #ccc; touch-action: none;
+        }
+        #calibration-container { position: absolute; }
+        #calibration-image, #calibration-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        #calibration-canvas { cursor: grab; }
+        .controls { padding: 10px; }
+        .controls button { 
+            font-size: 1.1em; padding: 8px 16px; margin: 0 10px; cursor: pointer; 
+            border-radius: 8px; border: 1px solid #ccc; background-color: #fff;
+        }
+        #save-button { background-color: #007bff; color: white; font-weight: bold; }
+
+        /* ★★★↓ここから新しいUI要素のスタイル↓★★★ */
+        #nudge-controls {
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.5); border-radius: 50%;
+            width: 150px; height: 150px; display: none; grid-template-columns: 1fr 1fr 1fr;
+            grid-template-rows: 1fr 1fr 1fr; place-items: center; z-index: 20;
+        }
+        .nudge-button {
+            width: 45px; height: 45px; border: none; border-radius: 8px;
+            background-color: rgba(255, 255, 255, 0.8); font-size: 24px; color: #333;
+            -webkit-user-select: none; user-select: none;
+        }
+        #nudge-up { grid-area: 1 / 2 / 2 / 3; }
+        #nudge-left { grid-area: 2 / 1 / 3 / 2; }
+        #nudge-right { grid-area: 2 / 3 / 3 / 4; }
+        #nudge-down { grid-area: 3 / 2 / 4 / 3; }
+
+        #zoom-view {
+            display: none; position: fixed; top: 20px; right: 20px;
+            width: 150px; height: 150px; border-radius: 50%;
+            border: 3px solid #007bff; box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+            background-image: url("data:image/jpeg;base64,{{ frame_data }}");
+            background-repeat: no-repeat; z-index: 20;
+        }
+        #zoom-view::after { /* ズームビューの中心を示す十字線 */
+            content: ''; position: absolute; top: 50%; left: 0;
+            width: 100%; height: 3px; background: rgba(255,0,0,0.5); transform: translateY(-50%);
+        }
+        #zoom-view::before {
+            content: ''; position: absolute; left: 50%; top: 0;
+            height: 100%; width: 3px; background: rgba(255,0,0,0.5); transform: translateX(-50%);
+        }
+    </style>
+</head>
+<body>
+    <div class="instructions">
+        <p>点を<b>ドラッグ</b>で大まかに動かし、<b>タップ</b>で選択して<b>十字キー</b>で微調整します。</p>
+    </div>
+
+    <div class="calibration-wrapper">
+        <div id="calibration-container">
+            <img id="calibration-image" src="data:image/jpeg;base64,{{ frame_data }}" alt="Video Frame">
+            <canvas id="calibration-canvas"></canvas>
+        </div>
+    </div>
+    
+    <div id="nudge-controls">
+        <button id="nudge-up" class="nudge-button">▲</button>
+        <button id="nudge-left" class="nudge-button">◀</button>
+        <button id="nudge-right" class="nudge-button">▶</button>
+        <button id="nudge-down" class="nudge-button">▼</button>
+    </div>
+    <div id="zoom-view"></div>
+
+    <div class="controls">
+        <button id="reset-button">リセット</button>
+        <button id="save-button">保存して分析開始</button>
+    </div>
+
+    <script>
+        const wrapper = document.querySelector('.calibration-wrapper');
+        const container = document.getElementById('calibration-container');
+        const image = document.getElementById('calibration-image');
+        const canvas = document.getElementById('calibration-canvas');
+        const ctx = canvas.getContext('2d');
+        const resetButton = document.getElementById('reset-button');
+        const saveButton = document.getElementById('save-button');
+        const nudgeControls = document.getElementById('nudge-controls');
+        const zoomView = document.getElementById('zoom-view');
+
+        const originalWidth = {{ original_width|tojson }};
+        const originalHeight = {{ original_height|tojson }};
+        const videoName = "{{ video_name }}";
+
+        let points = [];
+        let activePointIndex = -1;
+        let draggedPointIndex = -1;
+        let nudgeInterval;
+        let pressStartTime;
+        let isDragging = false;
+
+        function setup() {
+            setRenderedImageRect();
+            initializeDefaultPoints();
+            draw();
+        }
+        if (image.complete) { setup(); } else { image.addEventListener('load', setup); }
+        window.addEventListener('resize', setup);
+
+        function setRenderedImageRect() { /* ...変更なし... */
+            const wrapperWidth = wrapper.clientWidth;
+            const wrapperHeight = wrapper.clientHeight;
+            const wrapperAR = wrapperWidth / wrapperHeight;
+            const imageAR = originalWidth / originalHeight;
+            let w, h, x, y;
+            if (imageAR > wrapperAR) {
+                w = wrapperWidth; h = w / imageAR; x = 0; y = (wrapperHeight - h) / 2;
+            } else {
+                h = wrapperHeight; w = h * imageAR; y = 0; x = (wrapperWidth - w) / 2;
+            }
+            container.style.width = `${w}px`; container.style.height = `${h}px`;
+            container.style.top = `${y}px`; container.style.left = `${x}px`;
+            canvas.width = w; canvas.height = h;
+        }
+
+        function initializeDefaultPoints() { /* ...変更なし... */
+            const w = canvas.width; const h = canvas.height;
+            points = [
+                { x: w * 0.2, y: h * 0.2 }, { x: w * 0.8, y: h * 0.2 },
+                { x: w * 0.2, y: h * 0.8 }, { x: w * 0.8, y: h * 0.8 },
+                { x: w * 0.4, y: h * 0.5 }, { x: w * 0.6, y: h * 0.5 }
+            ];
+            activePointIndex = -1; nudgeControls.style.display = 'none'; zoomView.style.display = 'none';
+        }
+
+        function draw() { /* ...描画ロジックはほぼ同じ... */
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = '#00ffff'; ctx.lineWidth = 2;
+            if (points.length >= 4) {
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y); ctx.lineTo(points[1].x, points[1].y);
+                ctx.lineTo(points[3].x, points[3].y); ctx.lineTo(points[2].x, points[2].y);
+                ctx.closePath(); ctx.stroke();
+            }
+            if (points.length >= 6) {
+                ctx.beginPath();
+                ctx.moveTo(points[4].x, points[4].y); ctx.lineTo(points[5].x, points[5].y);
+                ctx.stroke();
+            }
+            points.forEach((p, index) => {
+                const isActive = (index === activePointIndex);
+                const isDragged = (index === draggedPointIndex);
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, isActive || isDragged ? 10 : 6, 0, 2 * Math.PI);
+                ctx.fillStyle = isActive || isDragged ? 'rgba(0, 255, 0, 0.5)' : 'rgba(255, 0, 0, 0.5)';
+                ctx.fill();
+                ctx.strokeStyle = isActive || isDragged ? '#00ff00' : '#ff0000';
+                ctx.stroke();
+                ctx.font = 'bold 16px Arial'; ctx.fillStyle = 'white'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText(index + 1, p.x, p.y);
+            });
+        }
+        
+        function getEventPosition(event) {
+            const rect = canvas.getBoundingClientRect();
+            const touch = event.touches ? event.touches[0] : event;
+            return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+        }
+
+        function updateZoomView() {
+            if (activePointIndex === -1) {
+                zoomView.style.display = 'none';
+                return;
+            }
+            zoomView.style.display = 'block';
+            const zoomLevel = 3;
+            const point = points[activePointIndex];
+            const bgX = -(point.x * zoomLevel - zoomView.offsetWidth / 2);
+            const bgY = -(point.y * zoomLevel - zoomView.offsetHeight / 2);
+            zoomView.style.backgroundPosition = `${bgX}px ${bgY}px`;
+            zoomView.style.backgroundSize = `${image.width * zoomLevel}px ${image.height * zoomLevel}px`;
+        }
+
+        // --- イベントリスナーをハイブリッド対応に修正 ---
+        let pressStartPos = { x: 0, y: 0 };
+        function handlePressStart(event) {
+            pressStartTime = Date.now();
+            isDragging = false;
+            const pos = getEventPosition(event);
+            pressStartPos = pos;
+            const grabRadius = 25;
+            draggedPointIndex = points.findIndex(p => {
+                const dx = p.x - pos.x;
+                const dy = p.y - pos.y;
+                return Math.sqrt(dx * dx + dy * dy) < grabRadius;
+            });
+            if (draggedPointIndex !== -1) {
+                draw(); // ドラッグ開始時に点をハイライト
+            }
+        }
+
+        function handlePressMove(event) {
+            if (draggedPointIndex === -1) return;
+            event.preventDefault();
+            const pos = getEventPosition(event);
+            const deltaX = pos.x - pressStartPos.x;
+            const deltaY = pos.y - pressStartPos.y;
+            if (Math.sqrt(deltaX * deltaX + deltaY * deltaY) > 5) {
+                isDragging = true; // 5px以上動いたらドラッグと判定
+            }
+            if (isDragging) {
+                activePointIndex = -1; // ドラッグ中は選択モードを解除
+                nudgeControls.style.display = 'none';
+                zoomView.style.display = 'none';
+                points[draggedPointIndex] = pos;
+                draw();
+            }
+        }
+
+        function handlePressEnd(event) {
+            if (isDragging) {
+                // ドラッグ操作が終了した場合
+                draggedPointIndex = -1;
+                draw();
+            } else {
+                // タップ操作だった場合
+                const pos = getEventPosition(event.changedTouches ? event.changedTouches[0] : event);
+                const grabRadius = 25;
+                const foundIndex = points.findIndex(p => {
+                    const dx = p.x - pos.x;
+                    const dy = p.y - pos.y;
+                    return Math.sqrt(dx * dx + dy * dy) < grabRadius;
+                });
+                if (foundIndex !== -1) {
+                    activePointIndex = (activePointIndex === foundIndex) ? -1 : foundIndex;
+                } else {
+                    activePointIndex = -1;
+                }
+            }
+            nudgeControls.style.display = (activePointIndex !== -1) ? 'grid' : 'none';
+            updateZoomView();
+            draw();
+            draggedPointIndex = -1;
+        }
+
+        canvas.addEventListener('mousedown', handlePressStart);
+        canvas.addEventListener('mousemove', handlePressMove);
+        canvas.addEventListener('mouseup', handlePressEnd);
+        canvas.addEventListener('touchstart', handlePressStart, { passive: false });
+        canvas.addEventListener('touchmove', handlePressMove, { passive: false });
+        canvas.addEventListener('touchend', handlePressEnd);
+        
+        function nudgePoint(dx, dy) {
+            if (activePointIndex === -1) return;
+            points[activePointIndex].x += dx;
+            points[activePointIndex].y += dy;
+            draw();
+            updateZoomView(); // 十字キー操作でもズームビューを更新
+        }
+        // ... 十字キーのロジックは変更なし ...
+        function startNudge(dx, dy) { nudgePoint(dx, dy); nudgeInterval = setInterval(() => nudgePoint(dx, dy), 50); }
+        function stopNudge() { clearInterval(nudgeInterval); }
+        document.getElementById('nudge-up').addEventListener('mousedown', () => startNudge(0, -1));
+        document.getElementById('nudge-down').addEventListener('mousedown', () => startNudge(0, 1));
+        document.getElementById('nudge-left').addEventListener('mousedown', () => startNudge(-1, 0));
+        document.getElementById('nudge-right').addEventListener('mousedown', () => startNudge(1, 0));
+        document.querySelectorAll('.nudge-button').forEach(btn => {
+            btn.addEventListener('mouseup', stopNudge); btn.addEventListener('mouseleave', stopNudge);
+            btn.addEventListener('touchstart', (e) => { e.preventDefault(); startNudge(parseInt(e.target.dataset.dx), parseInt(e.target.dataset.dy)); });
+            btn.addEventListener('touchend', stopNudge);
+        });
+        document.getElementById('nudge-up').dataset.dy = "-1"; document.getElementById('nudge-up').dataset.dx = "0";
+        document.getElementById('nudge-down').dataset.dy = "1"; document.getElementById('nudge-down').dataset.dx = "0";
+        document.getElementById('nudge-left').dataset.dx = "-1"; document.getElementById('nudge-left').dataset.dy = "0";
+        document.getElementById('nudge-right').dataset.dx = "1"; document.getElementById('nudge-right').dataset.dy = "0";
+        
+        resetButton.addEventListener('click', initializeDefaultPoints);
+        
+        saveButton.addEventListener('click', () => { /* ...保存処理は変更なし... */
+            const scaleX = originalWidth / canvas.width;
+            const scaleY = originalHeight / canvas.height;
+            const finalPoints = points.map(p => ({ x: Math.round(p.x * scaleX), y: Math.round(p.y * scaleY) }));
+            fetch('/save_coordinates', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ video_name: videoName, points: finalPoints }),
+            })
+            .then(r => r.json()).then(d => {
+                if (d.status === 'success') {
+                    alert('座標を保存しました。分析を開始します。\n処理には数分かかります。完了ページに移動するまでお待ちください。');
+                    window.location.href = d.redirect_url;
+                } else { alert('エラー: ' + d.message); }
+            }).catch(e => alert('サーバーとの通信中にエラー。'));
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>処理状況</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; margin: 40px; }
+        .spinner {
+            border: 8px solid #f3f3f3; border-top: 8px solid #3498db;
+            border-radius: 50%; width: 60px; height: 60px;
+            animation: spin 2s linear infinite; margin: 20px auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .success-link {
+            display: inline-block; margin-top: 20px; padding: 10px 20px;
+            background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; font-size: 1.2em;
+        }
+        .error { color: red; white-space: pre-wrap; background-color: #ffeaea; padding: 10px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div id="status-container">
+        <h1>動画を処理中です...</h1>
+        <p>この処理は数分かかることがあります。このページを閉じても、バックグラウンドで処理は続行されます。</p>
+        <div class="spinner"></div>
+        <p id="status-text">サーバーに接続中...</p>
+    </div>
+
+    <script>
+        function checkStatus() {
+            const taskId = "{{ task_id }}";
+            fetch(`/check_status/${taskId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const statusText = document.getElementById('status-text');
+                    const container = document.getElementById('status-container');
+                    
+                    if (data.state === 'SUCCESS') {
+                        const result = data.result;
+                        if (result.status === 'Success') {
+                            // 成功したら結果ページにリダイレクト
+                            window.location.href = `/result/${result.result_file}`;
+                        } else {
+                             container.innerHTML = `<h2>処理中にエラーが発生しました</h2><pre class="error">${result.error}</pre>`;
+                        }
+                    } else if (data.state === 'FAILURE') {
+                         container.innerHTML = `<h2>処理が失敗しました</h2><p class="error">${data.status}</p>`;
+                    } else {
+                        statusText.textContent = `状態: ${data.state} (${data.status})`;
+                        setTimeout(checkStatus, 3000); // 3秒後にもう一度確認
+                    }
+                })
+                .catch(error => {
+                    console.error("Error:", error);
+                    document.getElementById('status-text').textContent = "サーバーとの通信に失敗しました。";
+                });
+        }
+        document.addEventListener('DOMContentLoaded', checkStatus);
+    </script>
+</body>
+</html>
