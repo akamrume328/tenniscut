@@ -52,7 +52,7 @@ def run_analysis_task(self, original_video_path, original_filename):
 
     base_name = os.path.splitext(original_filename)[0]
     upload_folder = os.path.dirname(original_video_path)
-    converted_mp4_path = os.path.join(upload_folder, f"{base_name}_converted.mp4")
+    converted_mp4_path = os.path.join(upload_folder, f"{base_name}.mp4")
 
     if not convert_to_standard_mp4(original_video_path, converted_mp4_path):
         return {'status': 'Failure', 'error': '動画のMP4変換に失敗しました。'}
