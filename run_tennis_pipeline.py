@@ -1,3 +1,5 @@
+# run_tennis_pipeline.py (修正後)
+
 import os
 import cv2
 import pandas as pd
@@ -7,6 +9,7 @@ import numpy as np
 import time
 import argparse
 import sys
+from types import SimpleNamespace
 
 # --- 各モジュールから、実際に定義されているクラス/関数を正しくインポート ---
 from balltracking import BallTracker
@@ -20,6 +23,7 @@ from cut_non_rally_segments import cut_rally_segments
 
 def run_pipeline(args):
     """テニス分析の完全なパイプラインを実行する。"""
+    # この関数の中身は変更ありません
     pipeline_start_time = time.time()
     step_times = {}
 
@@ -46,12 +50,10 @@ def run_pipeline(args):
     print(f"パイプライン開始: {video_path}")
     print(f"フレームスキップ: {args.frame_skip}")
 
-    # ★★★↓ここから修正↓★★★
     # --- ステップ 1: コートキャリブレーション (Web UIで実行済みのため、ファイル検索を行う) ---
     print("\n--- ステップ 1: コートキャリブレーションファイルの検索 ---")
     
     court_data_source_dir_for_feature_extraction = None
-    # Web UIで保存された最新の座標ファイルを探す
     calibration_files = sorted(
         list(calibration_output_dir.glob(f"court_coords_{video_stem}_*.json")),
         key=lambda p: p.stat().st_mtime,
@@ -59,15 +61,11 @@ def run_pipeline(args):
     )
 
     if calibration_files:
-        # 最新のファイルを使用
         latest_calibration_file = calibration_files[0]
-        # TennisInferenceFeatureExtractorはディレクトリを期待するので親ディレクトリを渡す
         court_data_source_dir_for_feature_extraction = str(latest_calibration_file.parent)
         print(f"✅ Web UIで設定された座標を使用します: {latest_calibration_file.name}")
     else:
         print(f"⚠️ Web UIで設定された座標ファイルが見つかりません。({calibration_output_dir} 内)")
-        # この場合、court_data_source_dir_for_feature_extraction は None のまま
-    # ★★★↑ここまで修正↑★★★
 
     # --- ステップ 2: ボールトラッキング ---
     print("\n--- ステップ 2: ボールトラッキング ---")
@@ -93,7 +91,7 @@ def run_pipeline(args):
     tracking_json_files = sorted(list(tracking_output_dir.glob(f"tracking_features_{video_stem}_*.json")), key=lambda p: p.stat().st_mtime, reverse=True)
     if not tracking_json_files:
         print(f"エラー: トラッキングJSONが見つかりません")
-        return
+        return None # エラー時はNoneを返す
     step_times["ステップ 2 (ボールトラッキング)"] = time.time() - step_2_start_time
     print(f"ステップ 2 完了 ({step_times['ステップ 2 (ボールトラッキング)']:.2f}秒)")
 
@@ -102,18 +100,17 @@ def run_pipeline(args):
     step_3_start_time = time.time()
     feature_extractor = TennisInferenceFeatureExtractor(
         inference_data_dir=str(tracking_output_dir),
-        court_data_dir=court_data_source_dir_for_feature_extraction # ★★★ 検索結果をここで使用
+        court_data_dir=court_data_source_dir_for_feature_extraction
     )
     feature_extractor.features_dir = features_output_dir
     _, features_csv_path_str, _ = feature_extractor.run_feature_extraction(video_name=video_stem, save_results=True)
     if not features_csv_path_str:
         print("エラー: 特徴量抽出に失敗しました。")
-        return
+        return None
     features_csv_path = Path(features_csv_path_str)
     step_times["ステップ 3 (特徴量抽出)"] = time.time() - step_3_start_time
     print(f"ステップ 3 完了 ({step_times['ステップ 3 (特徴量抽出)']:.2f}秒)")
 
-    # ...以降のステップは変更なし...
     # --- ステップ 4: LSTM予測 ---
     print("\n--- ステップ 4: LSTM予測 ---")
     step_4_start_time = time.time()
@@ -128,7 +125,7 @@ def run_pipeline(args):
     )
     if not prediction_csv_path:
         print("エラー: LSTM予測に失敗しました。")
-        return
+        return None
     step_times["ステップ 4 (LSTM予測)"] = time.time() - step_4_start_time
     print(f"ステップ 4 完了 ({step_times['ステップ 4 (LSTM予測)']:.2f}秒)")
 
@@ -143,8 +140,15 @@ def run_pipeline(args):
                 smoothed_sequence_int = hmm_postprocessor.smooth()
                 if smoothed_sequence_int is not None:
                     smoothed_labels = np.array([hmm_postprocessor.int_to_label.get(s, "UNKNOWN_STATE") for s in smoothed_sequence_int])
+                    # 注意: add_smoothed_results_to_df は 'hmm_predicted_phase' という列を追加する
                     hmm_postprocessor.add_smoothed_results_to_df(smoothed_labels)
-                    saved_path = hmm_postprocessor.save_results(hmm_postprocessor.df_loaded, prediction_csv_path, output_base_dir=hmm_output_dir)
+                    # HMM処理後のCSVでは、後続の処理で 'predicted_phase' が参照されることを想定し、列名を修正するか、
+                    # または cut_rally_segments が 'hmm_predicted_phase' を見るように修正する必要がある。
+                    # ここでは、元の 'predicted_phase' をHMMの結果で上書きするアプローチをとる。
+                    df_hmm = hmm_postprocessor.df_loaded
+                    df_hmm['predicted_phase'] = df_hmm['hmm_predicted_phase']
+                    
+                    saved_path = hmm_postprocessor.save_results(df_hmm, prediction_csv_path, output_base_dir=hmm_output_dir)
                     if saved_path:
                         hmm_processed_csv_path = saved_path
     step_times["ステップ 4.5 (HMM後処理)"] = time.time() - step_4_5_start_time
@@ -169,28 +173,71 @@ def run_pipeline(args):
     print(f"ステップ 6 完了 ({step_times['ステップ 6 (Rally区間の抽出)']:.2f}秒)")
     
     print(f"\nパイプラインが完了しました。総処理時間: {time.time() - pipeline_start_time:.2f}秒")
+    
+    # 最終的な成果物のパスを返す
+    return str(output_rally_video_path)
+
+# ★★★★★ ここからが大きな変更点 ★★★★★
+
+def execute_pipeline(video_path, original_video_name):
+    """
+    Celeryタスクから呼び出されるためのメイン関数。
+    固定のパラメータを設定し、パイプラインを実行する。
+    """
+    print("--- execute_pipeline関数が呼び出されました ---")
+    
+    # argparseの代わりに、SimpleNamespaceを使って設定オブジェクトを作成
+    args = SimpleNamespace(
+        video=video_path,
+        original_video_name=original_video_name,
+        
+        # 固定モデルパス
+        yolo_model="models/yolo_model/best_5_31.pt",
+        lstm_model="models/lstm_model",
+        hmm_model_path="models/hmm_model/hmm_model_supervised.joblib",
+        
+        # パイプラインで固定するその他のパラメータ
+        output_dir='tennis_pipeline_output',
+        frame_skip=10,
+        imgsz=1920,
+        extract_rally_mode=True,
+        rally_buffer_before_seconds=3.0,
+        rally_buffer_after_seconds=2.0,
+        min_rally_duration_seconds=2.0,
+        min_phase_duration_seconds=0.5
+    )
+    
+    # パイプライン本体を実行し、結果を返す
+    try:
+        final_video_path = run_pipeline(args)
+        if final_video_path:
+            print(f"--- execute_pipelineが正常に完了しました。結果: {final_video_path} ---")
+            return final_video_path
+        else:
+            print("--- execute_pipelineでエラーが発生しました（run_pipelineがNoneを返しました） ---")
+            return None
+    except Exception as e:
+        print(f"--- execute_pipelineの実行中に致命的なエラーが発生しました: {e} ---")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
+# --- コマンドラインから直接実行された場合の部分 ---
 if __name__ == "__main__":
+    # この部分は、スクリプトを直接 `python run_tennis_pipeline.py ...` として実行した時だけ使われる
+    # Celeryから呼び出す場合は使われない
     parser = argparse.ArgumentParser(description='テニスビデオ分析パイプライン')
     parser.add_argument('--video', required=True, type=str, help='処理するビデオファイルのパス')
     parser.add_argument('--original_video_name', required=True, type=str, help='Webアプリからアップロードされた元のファイル名')
     
-    args = parser.parse_args()
+    # コマンドラインから渡された引数をパース
+    cli_args = parser.parse_args()
     
-    # 固定モデルパスをargsに追加
-    args.yolo_model = "models/yolo_model/best_5_31.pt"
-    args.lstm_model = "models/lstm_model" # フォルダを指定
-    args.hmm_model_path = "models/hmm_model/hmm_model_supervised.joblib"
+    print("--- コマンドラインから直接実行します ---")
     
-    # パイプラインで固定するその他のパラメータ
-    args.output_dir = 'tennis_pipeline_output'
-    args.frame_skip = 10
-    args.imgsz = 1920
-    args.extract_rally_mode = True
-    args.rally_buffer_before_seconds = 3.0
-    args.rally_buffer_after_seconds = 2.0
-    args.min_rally_duration_seconds = 2.0
-    args.min_phase_duration_seconds = 0.5
-    
-    run_pipeline(args)
+    # 上で定義したメイン関数を呼び出す
+    execute_pipeline(
+        video_path=cli_args.video,
+        original_video_name=cli_args.original_video_name
+    )
