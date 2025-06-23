@@ -215,15 +215,15 @@ class PredictionOverlay:
 
         if fps is None or total_video_frames is None:
             print(f"❌ 動画メタデータの取得に失敗したため、オーバーレイ処理を中止します: {video_path.name}")
-            return False
+            return False, None
         if fps == 0:
             print(f"❌ FPSが0のため、オーバーレイ処理を中止します: {video_path.name}")
-            return False
+            return False, None
 
         srt_content = self._generate_srt_content(predictions_df, fps, total_video_frames)
         if not srt_content:
             print("⚠️ 生成されたSRTコンテンツが空です。オーバーレイは行われません。")
-            return False # もしくはTrueで、空の動画を出力する選択も
+            return False, None # もしくはTrueで、空の動画を出力する選択も
 
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".srt", encoding='utf-8') as tmp_srt_file:
             tmp_srt_file.write(srt_content)
@@ -288,18 +288,21 @@ class PredictionOverlay:
                 # for line in process.stderr: # stderrは既に読み終わっている
                 #     print(line.strip())
                 success = False
+                output_filepath = None  # エラー時は出力ファイルパスをNoneに設定
         except FileNotFoundError:
             print(f"❌ FFmpegが見つかりません: {self.ffmpeg_path}。パスを確認してください。")
             success = False
+            output_filepath = None  # エラー時は出力ファイルパスをNoneに設定
         except Exception as e:
             print(f"❌ FFmpeg実行中に予期せぬエラー: {e}")
             success = False
+            output_filepath = None  # エラー時は出力ファイルパスをNoneに設定
         finally:
             # 一時SRTファイルの削除
             Path(temp_srt_path).unlink()
             print(f"  一時SRTファイル削除: {temp_srt_path}")
             
-        return success
+        return success, output_filepath
 
     def display_video_with_predictions_realtime(self, video_path: Path, predictions_df: pd.DataFrame):
         """OpenCVを使用してビデオと予測をリアルタイムで表示する"""

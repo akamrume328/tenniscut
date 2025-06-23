@@ -142,27 +142,46 @@ class TennisInferenceFeatureExtractor:
             print(f"\n🎯 処理中: {video_name}")
             
             if court_coordinates:
+                # 完全一致を試行
                 if video_name in court_coordinates:
                     court_data = court_coordinates[video_name]
                     court_match_type = "完全一致"
                     court_matched_key = video_name
                     print(f"  🎾 コート座標: ✅ 完全一致 - {video_name}")
                 else:
+                    # ベース名（日付を除く）でマッチング
+                    base_video_name = video_name.split('_')[0]  # "train_video1"
+                    
+                    matching_courts = []
                     for court_key in court_coordinates.keys():
-                        if video_name in court_key:
-                            court_data = court_coordinates[court_key]
-                            court_match_type = "部分一致(動画名がキーに含まれる)"
-                            court_matched_key = court_key
-                            print(f"  🎾 コート座標: ✅ 部分一致 - {video_name} ⊆ {court_key}")
-                            break
-                        elif court_key in video_name:
-                            court_data = court_coordinates[court_key]
-                            court_match_type = "部分一致(キーが動画名に含まれる)"
-                            court_matched_key = court_key
-                            print(f"  🎾 コート座標: ✅ 部分一致 - {court_key} ⊆ {video_name}")
-                            break
-                    if not court_data:
-                        print(f"  🎾 コート座標: ❌ マッチなし")
+                        if court_key.startswith(base_video_name):
+                            matching_courts.append(court_key)
+                    
+                    if matching_courts:
+                        # 最新のコート座標を選択（最後の要素）
+                        court_matched_key = sorted(matching_courts)[-1]
+                        court_data = court_coordinates[court_matched_key]
+                        court_match_type = "ベース名一致（最新選択）"
+                        print(f"  🎾 コート座標: ✅ ベース名一致 - {base_video_name} → {court_matched_key}")
+                    else:
+                        # 従来の部分一致処理
+                        court_data - None
+                        for court_key in court_coordinates.keys():
+                            if video_name in court_key:
+                                court_data = court_coordinates[court_key]
+                                court_match_type = "部分一致(動画名がキーに含まれる)"
+                                court_matched_key = court_key
+                                print(f"  🎾 コート座標: ✅ 部分一致 - {video_name} ⊆ {court_key}")
+                                break
+                            elif court_key in video_name:
+                                court_data = court_coordinates[court_key]
+                                court_match_type = "部分一致(キーが動画名に含まれる)"
+                                court_matched_key = court_key
+                                print(f"  🎾 コート座標: ✅ 部分一致 - {court_key} ⊆ {video_name}")
+                                break
+                        
+                        if court_data is None:
+                            print(f"  🎾 コート座標: ❌ マッチなし")
             else:
                 print(f"  🎾 コート座標: ❌ データなし")
             
@@ -573,13 +592,13 @@ class TennisInferenceFeatureExtractor:
         return interpolated_frame
 
     def create_temporal_features(self, features_df: pd.DataFrame, window_sizes: List[int] = [3, 5, 10, 15]) -> pd.DataFrame:
-        """時系列特徴量を作成（Numba高速化対応）"""
+        """時系列特徴量を作成（NumPy高速化対応）"""
         temporal_df = features_df.copy()
         
         numeric_columns = features_df.select_dtypes(include=[np.number]).columns
         target_columns = [col for col in numeric_columns if col not in ['frame_number', 'original_frame_number']]
         
-        print(f"時系列特徴量作成対象: {len(target_columns)}特徴量 (Numba高速化対応)")
+        print(f"時系列特徴量作成対象: {len(target_columns)}特徴量 (NumPy高速化対応)")
         
         is_interpolated = features_df.get('interpolated', pd.Series([False] * len(features_df))).values
         
