@@ -1,214 +1,205 @@
+# app.py (全面的な修正)
+
 import os
-import subprocess
-import ffmpeg
-import sys
-from flask import Flask, request, redirect, url_for, render_template, send_from_directory, flash, jsonify
+from flask import Flask, request, redirect, url_for, render_template, send_from_directory, jsonify
 from werkzeug.utils import secure_filename
-from pathlib import Path
-import cv2
-import base64
-import json
 from datetime import datetime
-from tasks import run_analysis_task, celery
+import redis
+import json
+from pathlib import Path
 
-# --- 設定 ---
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'tennis_pipeline_output/06_rally_extract' 
-HISTORY_FILE = 'tasks_history.json'
-ALLOWED_EXTENSIONS = {'mp4', 'mov', 'avi', 'm4v', 'mkv'}
+# tasks.py から Celery タスクをインポート
+from tasks import run_analysis_task
 
+# --- Flaskアプリと設定 ---
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024 # 上限を4GBに設定
-app.secret_key = 'super secret key'
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['TENNIS_OUTPUT_FOLDER'] = 'tennis_pipeline_output'
+app.config['MAX_CONTENT_LENGTH'] = 300 * 1024 * 1024  # 300MB
+ALLOWED_EXTENSIONS = {'mp4', 'mov', 'avi', 'mkv'}
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+# --- ディレクトリの作成 ---
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['TENNIS_OUTPUT_FOLDER'], exist_ok=True)
 
-def get_task_history():
-    if not os.path.exists(HISTORY_FILE):
-        return []
-    with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return []
-
-def save_task_to_history(task_id, original_filename):
-    history = get_task_history()
-    history.insert(0, {
-        'task_id': task_id,
-        'original_filename': original_filename,
-        'timestamp': datetime.now().isoformat()
-    })
-    with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(history, f, indent=4)
-
-@app.route('/')
-def history_page():
-    tasks_with_status = []
-    history = get_task_history()
-    for task_info in history:
-        task_result = run_analysis_task.AsyncResult(task_info['task_id'])
-        task_info['state'] = task_result.state
-        tasks_with_status.append(task_info)
-    return render_template('history.html', tasks=tasks_with_status)
+# --- Redisクライアントの初期化 ---
+try:
+    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    redis_client.ping()
+    print("✅ FlaskアプリからRedisへの接続に成功しました。")
+except redis.exceptions.ConnectionError as e:
+    print(f"❌ FlaskアプリからRedisへの接続に失敗しました: {e}")
+    print("   進捗表示機能と履歴の一部が正しく動作しない可能性があります。")
+    redis_client = None
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def convert_to_standard_mp4(source_path, output_path):
-    print(f"動画を標準的なMP4形式に変換します: {source_path} -> {output_path}")
-    try:
-        (ffmpeg.input(source_path).output(output_path, vcodec='libx264', acodec='aac', pix_fmt='yuv420p').overwrite_output().run(capture_stdout=True, capture_stderr=True))
-        print("変換が完了しました。")
-        return True
-    except ffmpeg.Error as e:
-        print("ffmpegエラー:", e.stderr.decode())
-        flash(f"動画の変換に失敗しました: {e.stderr.decode()}")
-        return False
-
-@app.route('/upload', methods=['POST'])
+@app.route('/', methods=['GET', 'POST'])
 def upload_file():
-    if 'video' not in request.files:
-        flash('ファイルが選択されていません')
-        return redirect(url_for('history_page'))
-    file = request.files['video']
-    if file.filename == '':
-        flash('ファイル名がありません')
-        return redirect(url_for('history_page'))
-    if file and allowed_file(file.filename):
-        original_filename = secure_filename(file.filename)
-        upload_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename)
-        file.save(upload_path)
-        print(f"動画をアップロードしました: {upload_path}")
-        return redirect(url_for('calibrate_page', video_name=original_filename))
-    else:
-        flash('許可されていないファイル形式です')
-        return redirect(url_for('history_page'))
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            return redirect(request.url)
+        file = request.files['file']
+        if file.filename == '':
+            return redirect(request.url)
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            original_video_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(original_video_path)
+            
+            # --- Celeryタスクを起動 ---
+            # 動画変換と分析はすべてバックグラウンドタスクに任せる
+            task = run_analysis_task.delay(original_video_path, filename)
 
-@app.route('/calibrate/<path:video_name>')
-def calibrate_page(video_name):
-    video_path = Path(app.config['UPLOAD_FOLDER']) / video_name
-    if not video_path.exists():
-        flash('指定された動画が見つかりません。')
-        return redirect(url_for('history_page'))
-    try:
-        cap = cv2.VideoCapture(str(video_path))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        middle_frame_index = total_frames // 2
-        cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_index)
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            flash('動画フレームの読み込みに失敗しました。')
-            return redirect(url_for('history_page'))
+            # タスク情報をRedisに保存 (履歴表示用)
+            if redis_client:
+                task_info = {
+                    'task_id': task.id,
+                    'filename': filename,
+                    'upload_time': datetime.now().isoformat(),
+                    'state': 'PENDING' # 初期状態
+                }
+                redis_client.hset('task_history', task.id, json.dumps(task_info))
+
+            return redirect(url_for('history'))
+
+    return render_template('index.html')
+
+@app.route('/history')
+def history():
+    """タスクの履歴をRedisから取得して表示する"""
+    tasks_for_template = []
+    if redis_client:
+        # Redisからすべてのタスク情報を取得
+        all_tasks_json = redis_client.hgetall('task_history')
         
-        # ★★★↓ここのコメントアウト(#)を削除して、回転処理を有効化↓★★★
-        frame = cv2.rotate(frame, cv2.ROTATE_180)
+        # 時刻でソートするためにリストに変換
+        sorted_tasks = sorted(all_tasks_json.items(), key=lambda item: json.loads(item[1])['upload_time'], reverse=True)
         
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_b64 = base64.b64encode(buffer).decode('utf-8')
-        height, width, _ = frame.shape
-        return render_template('calibrate.html', frame_data=frame_b64, video_name=video_name, original_width=width, original_height=height)
-    except Exception as e:
-        print(f"キャリブレーションページの生成中にエラー: {e}")
-        flash('ページの生成中にエラーが発生しました。')
-        return redirect(url_for('history_page'))
+        for task_id, task_json in sorted_tasks:
+            task_data = json.loads(task_json)
+            tasks_for_template.append(task_data)
 
-@app.route('/save_coordinates', methods=['POST'])
-def save_coordinates():
-    data = request.get_json()
-    video_name = data['video_name']
-    coordinates = data['coordinates']
-    
-    # ファイル名の生成
-    base_name = os.path.splitext(video_name)[0]
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"court_coords_{base_name}_{timestamp}.json"
-    filepath = os.path.join('tennis_pipeline_output', '00_calibration_data', filename)
-    
-    # キー名形式で保存（メタデータ付き）
-    coordinates_data = {
-        "top_left_corner": coordinates['top_left_corner'],
-        "top_right_corner": coordinates['top_right_corner'],
-        "bottom_left_corner": coordinates['bottom_left_corner'],
-        "bottom_right_corner": coordinates['bottom_right_corner'],
-        "net_left_ground": coordinates['net_left_ground'],
-        "net_right_ground": coordinates['net_right_ground'],
-        "_metadata": {
-            "creation_time": datetime.now().isoformat(),
-            "video_name": video_name,
-            "coordinate_count": 6,
-            "point_names": [
-                "top_left_corner",
-                "top_right_corner", 
-                "bottom_left_corner",
-                "bottom_right_corner",
-                "net_left_ground",
-                "net_right_ground"
-            ]
-        }
-    }
-    
-    # ディレクトリ作成
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    
-    # ファイル保存
-    with open(filepath, 'w') as f:
-        json.dump(coordinates_data, f, indent=2)
-    
-    print(f"コート座標を保存しました（キー名形式）: {filepath}")
-    
-    return jsonify({
-        'status': 'success',
-        'redirect_url': url_for('start_analysis', video_name=video_name)
-    })
-
-@app.route('/start_analysis/<path:video_name>')
-def start_analysis(video_name):
-    """分析タスク（動画変換を含む）をCeleryに依頼する"""
-    original_filename = secure_filename(video_name)
-    original_video_path = os.path.join(app.config['UPLOAD_FOLDER'], original_filename)
-
-    if not os.path.exists(original_video_path):
-        flash("分析対象の動画ファイルが見つかりません。")
-        return redirect(url_for('history_page'))
-
-    print(f"Celeryに分析タスク（変換込み）を依頼します: {original_filename}")
-    
-    # ★★★ タスクに渡す引数を、変換前の元の動画パスに変更 ★★★
-    task = run_analysis_task.delay(original_video_path, original_filename)
-    
-    save_task_to_history(task.id, original_filename)
-    
-    return redirect(url_for('history_page'))
+    return render_template('history.html', tasks=tasks_for_template)
 
 
 @app.route('/check_status/<task_id>')
 def check_task_status(task_id):
+    """Celeryタスクの状態と、Redisに保存された詳細な進捗を取得する"""
+    response = {'state': 'UNKNOWN', 'status': 'タスク情報が見つかりません。'}
+
+    # まずCelery自体のタスク状態を確認
     task = run_analysis_task.AsyncResult(task_id)
-    if task.state == 'PENDING':
-        response = {'state': task.state, 'status': '待機中...'}
-    elif task.state == 'PROGRESS': # ★★★ 進行中状態を追加
-        response = {'state': task.state, 'status': '処理中...', 'meta': task.info}
-    elif task.state != 'FAILURE':
-        response = {'state': task.state, 'status': '処理中...'}
-        if task.state == 'SUCCESS':
-            response = {'state': task.state, 'status': '完了', 'result': task.info}
-    else:
-        response = {'state': task.state, 'status': str(task.info)}
+    response['state'] = task.state
+
+    # 次にRedisから詳細な進捗情報を取得
+    if redis_client:
+        progress_key = f"pipeline-progress:{task_id}"
+        progress_data = redis_client.hgetall(progress_key)
+        
+        if progress_data:
+            # Redisから取得したデータを整形
+            status = progress_data.get("status")
+            if status == "completed":
+                response['state'] = 'SUCCESS'
+                response['status'] = '完了'
+                response['result'] = {'result_path': progress_data.get("result_path")}
+            elif status == "error":
+                response['state'] = 'FAILURE'
+                response['status'] = 'エラーが発生しました'
+                response['details'] = progress_data.get("error_message", "不明なエラーです。")
+            else: # processing
+                response['state'] = 'PROGRESS'
+                response['status'] = '処理中...'
+                response['details'] = {
+                    'current_step': int(progress_data.get("current_step", 0)),
+                    'total_steps': int(progress_data.get("total_steps", 0)),
+                    'step_name': progress_data.get("step_name", "処理中...")
+                }
+        elif task.state == 'PENDING':
+             response['status'] = '待機中...'
+        elif task.state == 'FAILURE':
+            response['status'] = 'タスクの起動に失敗しました。'
+            response['details'] = str(task.info)
+        else:
+             # Redisにまだ情報がなく、タスクが実行中の場合
+             response['state'] = 'PROGRESS'
+             response['status'] = 'プロセスの初期化中...'
+             response['details'] = {'step_name': '初期化中...'}
+
+    # 履歴情報も更新
+    if redis_client:
+        task_info_json = redis_client.hget('task_history', task_id)
+        if task_info_json:
+            task_info = json.loads(task_info_json)
+            if task_info.get('state') != response['state']:
+                 task_info['state'] = response['state']
+                 redis_client.hset('task_history', task_id, json.dumps(task_info))
+
     return jsonify(response)
-    
-@app.route('/result/<filename>')
-def show_result(filename):
-    return render_template('result.html', filename=filename)
 
 @app.route('/download/<path:filename>')
 def download_file(filename):
-    return send_from_directory(app.config['OUTPUT_FOLDER'], filename, as_attachment=True)
+    """分析結果の動画をダウンロードさせる"""
+    # セキュリティのため、ファイルパスを安全に解決
+    directory = os.path.abspath(os.path.join(app.config['TENNIS_OUTPUT_FOLDER'], '06_rally_extract'))
+    safe_path = os.path.join(directory, filename)
+    if os.path.commonpath([safe_path, directory]) != directory:
+        return "不正なリクエストです", 400
+        
+    return send_from_directory(directory, filename, as_attachment=True)
+    
+@app.route('/calibrate/<video_name>')
+def calibrate(video_name):
+    # uploadsフォルダから変換後のビデオを探す
+    base_name = os.path.splitext(video_name)[0]
+    converted_name = f"{base_name}_converted.mp4"
+    video_path = Path(app.config['UPLOAD_FOLDER']) / converted_name
+    
+    # 最初のフレームを画像として抽出
+    output_image_folder = Path('static/frames')
+    output_image_folder.mkdir(exist_ok=True)
+    output_image_path = output_image_folder / f"{video_path.stem}.jpg"
+    
+    if not output_image_path.exists():
+        # ffmpegで最初のフレームを抽出
+        cmd = ['ffmpeg', '-i', str(video_path), '-vframes', '1', '-q:v', '2', str(output_image_path)]
+        subprocess.run(cmd)
+        
+    # 既存の座標データを取得
+    calibration_dir = Path(app.config['TENNIS_OUTPUT_FOLDER']) / '00_calibration_data'
+    coords_files = list(calibration_dir.glob(f"court_coords_{base_name}*.json"))
+    latest_coords = None
+    if coords_files:
+        latest_file = max(coords_files, key=os.path.getctime)
+        with open(latest_file, 'r') as f:
+            latest_coords = json.load(f)
+
+    return render_template('calibrate.html', 
+                           video_name=video_name, 
+                           image_path=str(output_image_path).replace('\\', '/'),
+                           existing_coords=latest_coords)
+
+@app.route('/save_coords', methods=['POST'])
+def save_coords():
+    data = request.get_json()
+    video_name = data['video_name']
+    coords = data['coords']
+    
+    base_name = os.path.splitext(video_name)[0]
+    output_dir = Path(app.config['TENNIS_OUTPUT_FOLDER']) / '00_calibration_data'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"court_coords_{base_name}_{timestamp}.json"
+    filepath = output_dir / filename
+    
+    with open(filepath, 'w') as f:
+        json.dump(coords, f, indent=4)
+        
+    return jsonify({'status': 'success', 'message': f'座標を {filename} として保存しました。'})
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5001)

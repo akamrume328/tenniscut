@@ -7,3 +7,4 @@ scikit-learn
 tqdm
 hmmlearn
 # matplotlib # 必要に応じてコメントアウトを解除してください
+redis
