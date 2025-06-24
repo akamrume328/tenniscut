@@ -15,7 +15,7 @@ from tasks import run_analysis_task
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['TENNIS_OUTPUT_FOLDER'] = 'tennis_pipeline_output'
-app.config['MAX_CONTENT_LENGTH'] = 300 * 1024 * 1024  # 300MB
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 *1024 
 ALLOWED_EXTENSIONS = {'mp4', 'mov', 'avi', 'mkv'}
 
 # --- ディレクトリの作成 ---

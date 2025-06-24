@@ -16,7 +16,7 @@ import json
 # --- 各モジュールから、実際に定義されているクラス/関数を正しくインポート ---
 from balltracking import BallTracker
 from feature_extractor_predict import TennisInferenceFeatureExtractor
-from predict_lstm_model import TennisLSTMPredictor
+from predict_lstm_model_cv import TennisLSTMPredictor
 from overlay_predictions import PredictionOverlay
 from court_calibrator import CourtCalibrator
 from hmm_postprocessor import HMMSupervisedPostprocessor
