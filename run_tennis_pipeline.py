@@ -15,7 +15,7 @@ import json
 
 # --- 各モジュールから、実際に定義されているクラス/関数を正しくインポート ---
 from balltracking import BallTracker
-from feature_extractor_predict import TennisInferenceFeatureExtractor
+from feature_extractor_unified import UnifiedFeatureExtractor
 from predict_lstm_model_cv import TennisLSTMPredictor
 from overlay_predictions import PredictionOverlay
 from court_calibrator import CourtCalibrator
@@ -122,22 +122,58 @@ def run_pipeline(args):
         # --- ステップ 3: 特徴量抽出 ---
         update_progress(task_id, "processing", 3, total_steps, "特徴量抽出")
         step_3_start_time = time.time()
-        feature_extractor = TennisInferenceFeatureExtractor(inference_data_dir=str(tracking_output_dir), court_data_dir=court_data_source_dir_for_feature_extraction)
-        feature_extractor.features_dir = features_output_dir
-        _, features_csv_path_str, _ = feature_extractor.run_feature_extraction(video_name=video_stem, save_results=True)
-        if not features_csv_path_str: raise RuntimeError("特徴量抽出に失敗しました。")
-        features_csv_path = Path(features_csv_path_str)
+        feature_extractor = UnifiedFeatureExtractor(data_dir = ".") 
+        # 1. トラッキングデータをロード
+        feature_extractor.data_dir = tracking_output_dir
+        tracking_features = feature_extractor.load_tracking_features(video_name=video_stem)
+
+        # 2. コート座標データをロード
+        court_coordinates = {}
+        if court_data_source_dir_for_feature_extraction:
+            feature_extractor.data_dir = Path(court_data_source_dir_for_feature_extraction)
+            court_coordinates = feature_extractor.load_court_coordinates(video_name=video_stem)
+
+        if not tracking_features:
+            raise RuntimeError("特徴量抽出のためのトラッキングデータが見つかりません。")
+
+        vid_key = list(tracking_features.keys())[0]
+        tracking_data_dict = tracking_features[vid_key]
+        court_coords_dict = court_coordinates.get(vid_key)
+
+        # 3. 特徴量抽出のコアロジックを実行
+        features_df = feature_extractor.process_single_video(
+            video_name=vid_key,
+            tracking_data_dict=tracking_data_dict,
+            court_coords=court_coords_dict
+        )
+
+        if features_df.empty:
+            raise RuntimeError("特徴量抽出に失敗しました。")
+
+        # 4. 結果を保存し、パスを取得
+        feature_extractor.predict_features_dir = features_output_dir
+        filename = f"tennis_inference_features_{vid_key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        features_csv_path = features_output_dir / filename
+        features_df.to_csv(features_csv_path, index=False, encoding='utf-8-sig')
+        print(f"✅ 特徴量を保存しました: {features_csv_path}")
+        
         step_times["ステップ 3 (特徴量抽出)"] = time.time() - step_3_start_time
         print(f"ステップ 3 完了 ({step_times['ステップ 3 (特徴量抽出)']:.2f}秒)")
 
-        # --- ステップ 4: LSTM予測 ---
+        # --- ステップ 4: LSTM予測 (cv版) ---
         update_progress(task_id, "processing", 4, total_steps, "AIモデルによる局面予測 (LSTM)")
         step_4_start_time = time.time()
+        
+        # TennisLSTMPredictor (cv版) を使用
         predictor = TennisLSTMPredictor(models_dir=str(Path(args.lstm_model).parent), input_features_dir=str(features_output_dir))
         predictor.predictions_output_dir = predictions_output_dir
+        
+        # cv版に追加した run_prediction_for_file メソッドを呼び出す
         prediction_csv_path = predictor.run_prediction_for_file(model_set_path=Path(args.lstm_model), feature_csv_path=features_csv_path)
+        
         if not prediction_csv_path: raise RuntimeError("LSTM予測に失敗しました。")
         step_times["ステップ 4 (LSTM予測)"] = time.time() - step_4_start_time
+        print(f"ステップ 4 完了 ({step_times['ステップ 4 (LSTM予測)']:.2f}秒)")
         print(f"ステップ 4 完了 ({step_times['ステップ 4 (LSTM予測)']:.2f}秒)")
 
         # --- ステップ 5: HMMによる後処理 ---
