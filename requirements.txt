@@ -8,3 +8,7 @@ tqdm
 hmmlearn
 # matplotlib # 必要に応じてコメントアウトを解除してください
 redis
+
+# Tennis Reservation Notification System dependencies
+requests
+schedule
